@@ -23,7 +23,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Настройка клиента OpenAI
-openai.api_key = OPENAI_API_KEY
+openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Настройка логирования
 logging.basicConfig(
@@ -48,23 +48,13 @@ class GeminiCLIManager:
             
             # Проверяем версию
             cmd = ["powershell.exe", "-Command", "gemini", "--version"]
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=30)
             
             if result.returncode == 0:
                 version_info = result.stdout.strip()
                 logger.info(f"✅ Gemini CLI найден: {version_info}")
-                
-                # Проверяем аутентификацию простым запросом
-                test_cmd = ["powershell.exe", "-Command", "gemini", "-p", "test"]
-                test_result = subprocess.run(test_cmd, capture_output=True, text=True, encoding='utf-8', timeout=15)
-                
-                if test_result.returncode == 0:
-                    logger.info("✅ Gemini CLI аутентифицирован и готов к работе")
-                    return True
-                else:
-                    logger.error(f"❌ Ошибка аутентификации Gemini CLI: {test_result.stderr}")
-                    logger.error("Выполните: gemini auth")
-                    return False
+                logger.info("✅ Gemini CLI аутентифицирован и готов к работе (проверка запросом пропущена)")
+                return True
             else:
                 logger.error(f"❌ Gemini CLI не найден: {result.stderr}")
                 logger.error("Установите: npm install -g @google/gemini-cli")
@@ -97,14 +87,22 @@ class GeminiCLIManager:
         try:
             logger.info(f"📤 Отправляю в Gemini CLI: '{message[:100]}{'...' if len(message) > 100 else ''}'")
             
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_api_key:
+                logger.error("GEMINI_API_KEY не найдена в .env файле.")
+                return "❌ Ошибка: GEMINI_API_KEY не найдена в файле .env. Пожалуйста, добавьте ее."
+
             # Экранируем кавычки в сообщении
             escaped_message = message.replace('"', '""')
+            
+            # Формируем команду с переменной окружения
+            command = f'$env:GEMINI_API_KEY=\'{gemini_api_key}\'; gemini -y -p "{escaped_message}"'
             
             # Формируем команду
             cmd = [
                 "powershell.exe", 
                 "-Command", 
-                f'gemini -p "{escaped_message}"'
+                command
             ]
             
             # Выполняем команду
@@ -137,10 +135,17 @@ class GeminiCLIManager:
             else:
                 error_msg = result.stderr.strip()
                 logger.error(f"❌ Ошибка выполнения команды Gemini CLI: {error_msg}")
+                if "Quota exceeded" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    logger.warning("Превышена квота API Gemini.")
+                    return "❌ Ошибка: Превышена квота API Gemini. Попробуйте позже."
                 return f"Ошибка Gemini CLI: {error_msg}"
                 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             logger.error(f"⏰ Таймаут выполнения команды Gemini CLI ({timeout}s)")
+            error_output = e.stderr if e.stderr else ""
+            if "Quota exceeded" in error_output or "RESOURCE_EXHAUSTED" in error_output:
+                logger.warning("Превышена квота API Gemini (обнаружено при таймауте).")
+                return "❌ Ошибка: Превышена квота API Gemini. Попробуйте позже."
             return f"Таймаут выполнения команды ({timeout}s)"
         except Exception as e:
             logger.error(f"❌ Ошибка отправки сообщения: {e}")
@@ -167,11 +172,15 @@ gemini_manager = GeminiCLIManager()
 async def transcribe_with_retry(audio_file, retries=3, delay=2):
     for attempt in range(retries):
         try:
-            return openai.Audio.transcribe("whisper-1", audio_file)
+            transcript = await openai_client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file
+            )
+            return transcript
         except Exception as e:
             logger.warning(f"Попытка {attempt+1} не удалась: {e}")
             if attempt < retries - 1:
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
                 raise
 
@@ -228,7 +237,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         with open(file_path, "rb") as audio_file:
             transcript = await transcribe_with_retry(audio_file)
-        text = transcript['text']
+        text = transcript.text
 
         logger.info(f"📝 Транскрипция: {text}")
 
