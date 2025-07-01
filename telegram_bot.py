@@ -8,7 +8,7 @@ import queue
 import platform
 import psutil
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -25,15 +25,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Настройка клиента OpenAI
 openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Настройка логирования
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.DEBUG
-)
-logger = logging.getLogger(__name__)
-
-# Путь к истории
+# Путь к истории и настройка логирования
 HISTORY_PATH = os.path.join("logs", "history.txt")
 os.makedirs("logs", exist_ok=True)
+
+# Настройка логирования в тот же файл history.txt
+logging.basicConfig(
+    format="[%(asctime)s.%(msecs)03d] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler(HISTORY_PATH, encoding='utf-8'),
+        logging.StreamHandler()  # Для вывода в консоль
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class GeminiCLIManager:
     """Менеджер для работы с Gemini CLI через прямые команды"""
@@ -79,13 +85,15 @@ class GeminiCLIManager:
         logger.info("✅ Gemini CLI готов к работе!")
         return True
     
-    async def send_message(self, message, user_id, timeout=60):
+    async def send_message(self, message, user_id, timeout=180):
         """Отправляет сообщение в Gemini CLI через прямую команду"""
         if not self.is_ready:
             return "❌ Gemini CLI не готов к работе"
         
         try:
-            logger.info(f"📤 Отправляю в Gemini CLI: '{message[:100]}{'...' if len(message) > 100 else ''}'")
+            # Маскируем ключ в логах, показывая только первые и последние 4 символа
+            masked_message = message[:100] + ('...' if len(message) > 100 else '')
+            logger.info(f"📤 Отправляю в Gemini CLI: '{masked_message}'")
             
             gemini_api_key = os.getenv("GEMINI_API_KEY")
             if not gemini_api_key:
@@ -96,6 +104,7 @@ class GeminiCLIManager:
             escaped_message = message.replace('"', '""')
             
             # Формируем команду с переменной окружения
+            # НЕ логируем эту команду, так как она содержит API ключ
             command = f'$env:GEMINI_API_KEY=\'{gemini_api_key}\'; gemini -y -p "{escaped_message}"'
             
             # Формируем команду
@@ -117,12 +126,21 @@ class GeminiCLIManager:
             if result.returncode == 0:
                 response = result.stdout.strip()
                 
-                # Убираем предупреждения Node.js
+                # Убираем предупреждения Node.js и системные сообщения
                 lines = response.split('\n')
+                total_lines = len(lines)
                 clean_lines = []
+                filtered_count = 0
+                
                 for line in lines:
                     if not self._is_system_message(line):
                         clean_lines.append(line)
+                    else:
+                        filtered_count += 1
+                
+                # Логируем если было много отфильтрованных строк
+                if filtered_count > 10:
+                    logger.warning(f"⚠️ Отфильтровано {filtered_count} из {total_lines} строк системных сообщений")
                 
                 final_response = '\n'.join(clean_lines).strip()
                 
@@ -130,26 +148,32 @@ class GeminiCLIManager:
                     logger.info(f"📥 Получен ответ от Gemini ({len(final_response)} символов)")
                     return final_response
                 else:
-                    logger.warning("⚠️ Gemini CLI вернул пустой ответ")
+                    logger.warning("⚠️ Gemini CLI вернул пустой ответ после фильтрации")
+                    if filtered_count > 0:
+                        logger.warning(f"💡 Возможно, все {total_lines} строк были системными сообщениями")
                     return "Gemini CLI вернул пустой ответ"
             else:
                 error_msg = result.stderr.strip()
-                logger.error(f"❌ Ошибка выполнения команды Gemini CLI: {error_msg}")
+                # Маскируем возможный API ключ в сообщении об ошибке
+                safe_error = error_msg.replace(gemini_api_key, "***API_KEY***") if gemini_api_key in error_msg else error_msg
+                logger.error(f"❌ Ошибка выполнения команды Gemini CLI: {safe_error}")
                 if "Quota exceeded" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                     logger.warning("Превышена квота API Gemini.")
                     return "❌ Ошибка: Превышена квота API Gemini. Попробуйте позже."
-                return f"Ошибка Gemini CLI: {error_msg}"
+                return f"Ошибка Gemini CLI: {safe_error}"
                 
         except subprocess.TimeoutExpired as e:
             logger.error(f"⏰ Таймаут выполнения команды Gemini CLI ({timeout}s)")
-            error_output = e.stderr if e.stderr else ""
-            if "Quota exceeded" in error_output or "RESOURCE_EXHAUSTED" in error_output:
+            error_output = e.stderr.decode('utf-8', errors='ignore') if isinstance(e.stderr, bytes) else (e.stderr if e.stderr else "")
+            # Маскируем возможный API ключ в выводе ошибки
+            safe_error = error_output.replace(gemini_api_key, "***API_KEY***") if gemini_api_key and gemini_api_key in error_output else error_output
+            if "Quota exceeded" in safe_error or "RESOURCE_EXHAUSTED" in safe_error:
                 logger.warning("Превышена квота API Gemini (обнаружено при таймауте).")
                 return "❌ Ошибка: Превышена квота API Gemini. Попробуйте позже."
-            return f"Таймаут выполнения команды ({timeout}s)"
+            return f"⚠️ Запрос слишком сложный, превышен таймаут ({timeout}s). Попробуйте упростить запрос."
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки сообщения: {e}")
-            return f"Ошибка: {e}"
+            logger.error(f"❌ Ошибка отправки сообщения: {str(e)}")
+            return f"Ошибка: {str(e)}"
     
     def _is_system_message(self, line):
         """Проверяет, является ли строка служебным сообщением"""
@@ -161,7 +185,8 @@ class GeminiCLIManager:
             "punycode",
             "Use `node --trace-deprecation",
             "(node:",
-            "┌", "│", "└", "▲", "◯"
+            "┌", "│", "└", "▲", "◯",
+            "Warning:"  # Добавляем фильтр для предупреждений Gemini CLI
         ]
         return any(pattern in line for pattern in system_patterns)
 
@@ -186,8 +211,56 @@ async def transcribe_with_retry(audio_file, retries=3, delay=2):
 
 # Функция для записи истории
 def log_history(user_id, text, gemini_response):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Формат с миллисекундами
     with open(HISTORY_PATH, "a", encoding="utf-8") as f:
-        f.write(f"USER {user_id}: {text}\nGEMINI: {gemini_response}\n---\n")
+        f.write(f"[{now}] USER {user_id}: {text}\n[{now}] GEMINI: {gemini_response}\n---\n")
+
+async def split_and_send_message(update: Update, text: str, max_length: int = 4000) -> None:
+    """Разбивает длинное сообщение на части и отправляет их по очереди"""
+    # Если сообщение короткое - отправляем как есть
+    if len(text) <= max_length:
+        await update.message.reply_text(text)
+        return
+
+    # Если сообщение содержит таблицу или структурированные данные
+    if '|' in text or '\t' in text or '.csv' in text.lower():
+        # Сохраняем во временный файл
+        temp_file = "temp_response.txt"
+        try:
+            with open(temp_file, "w", encoding='utf-8') as f:
+                f.write(text)
+            # Отправляем файл
+            with open(temp_file, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="response.txt",
+                    caption="Ответ слишком длинный, отправляю файлом"
+                )
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        return
+
+    # Разбиваем на части по строкам
+    parts = []
+    current_part = ""
+    
+    for line in text.split('\n'):
+        if len(current_part) + len(line) + 1 <= max_length:
+            current_part += line + '\n'
+        else:
+            if current_part:
+                parts.append(current_part)
+            current_part = line + '\n'
+    
+    if current_part:
+        parts.append(current_part)
+
+    # Отправляем части по очереди
+    for i, part in enumerate(parts, 1):
+        header = f"Часть {i}/{len(parts)}:\n" if len(parts) > 1 else ""
+        await update.message.reply_text(header + part)
 
 # Функция для обработки текстовых сообщений
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -201,6 +274,20 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"📱 Текстовое сообщение от {user_id}: {text}")
 
     try:
+        # Проверяем, является ли это запросом на логи
+        log_pattern = r'(?:покажи|показать|дай|выведи|логи?|лог|записи?).*(?:за|последние?)\s*(\d+)\s*(?:минут|мин)'
+        match = re.search(log_pattern, text.lower())
+        
+        if match:
+            minutes = int(match.group(1))
+            if minutes > 60:  # Ограничиваем максимум часом
+                await update.message.reply_text("Максимальный период для показа логов - 60 минут.")
+                return
+            
+            log_result = filter_logs_by_time(minutes)
+            await split_and_send_message(update, log_result)
+            return
+
         # Отправляем текст в Gemini CLI
         gemini_response = await gemini_manager.send_message(text, user_id)
         
@@ -209,8 +296,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Запись в историю
         log_history(user_id, text, gemini_response)
         
-        # Отправка ответа от Gemini пользователю
-        await update.message.reply_text(gemini_response)
+        # Отправка ответа от Gemini пользователю с учетом длины
+        await split_and_send_message(update, gemini_response)
 
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке текстового сообщения: {e}")
@@ -249,8 +336,8 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         # Запись в историю
         log_history(user_id, text, gemini_response)
         
-        # Отправка ответа от Gemini пользователю
-        await update.message.reply_text(gemini_response)
+        # Отправка ответа от Gemini пользователю с учетом длины
+        await split_and_send_message(update, gemini_response)
 
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке голосового сообщения: {e}")
@@ -264,6 +351,59 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 async def error(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning('Update "%s" caused error "%s"', update, context.error)
 
+def filter_logs_by_time(minutes_back: int) -> str:
+    """Фильтрует логи за последние N минут"""
+    try:
+        if not os.path.exists(HISTORY_PATH):
+            return "Файл логов не найден."
+        
+        # Время N минут назад
+        cutoff_time = datetime.now() - timedelta(minutes=minutes_back)
+        
+        filtered_logs = []
+        
+        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Разбиваем на блоки по разделителю ---
+        blocks = content.split("---\n")
+        
+        for block in blocks:
+            if not block.strip():
+                continue
+                
+            lines = block.strip().split('\n')
+            if not lines:
+                continue
+                
+            # Ищем первую строку с временной меткой
+            first_line = lines[0]
+            if not first_line.startswith('['):
+                continue
+                
+            try:
+                # Извлекаем время из первой строки
+                time_str = first_line.split(']')[0][1:]  # Убираем [ и ]
+                log_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S.%f")
+                
+                # Если время больше cutoff_time, добавляем весь блок
+                if log_time >= cutoff_time:
+                    filtered_logs.append(block.strip())
+                    
+            except (ValueError, IndexError):
+                # Если не удается распарсить время, пропускаем
+                continue
+        
+        if not filtered_logs:
+            return f"За последние {minutes_back} минут записей в логах не найдено."
+        
+        result = f"Логи за последние {minutes_back} минут:\n\n"
+        result += "\n---\n".join(filtered_logs)
+        
+        return result
+        
+    except Exception as e:
+        return f"Ошибка при фильтрации логов: {str(e)}"
 
 def main() -> None:
     """Запуск бота."""
