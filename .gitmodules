@@ -1,0 +1,3 @@
+[submodule "vendor/telecodex"]
+	path = vendor/telecodex
+	url = https://github.com/benedict2310/telecodex.git

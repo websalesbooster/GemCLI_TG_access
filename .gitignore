@@ -1,9 +1,11 @@
 # Файл переменных окружения
 .env
+vendor/telecodex/.env
 
 # Логи
 logs/
 history.txt
+*.log
 
 # Временные файлы Python
 __pycache__/
@@ -16,4 +18,10 @@ __pycache__/
 
 # Системные файлы
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Telecodex runtime artefacts (do NOT ignore vendor/telecodex itself)
+.telecodex/
+vendor/telecodex/dist/
+vendor/telecodex/node_modules/
+vendor/telecodex/.npm/

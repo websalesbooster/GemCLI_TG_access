@@ -192,4 +192,37 @@ powershell.exe -Command 'gemini -p "экранированное_сообщен�
 ✅ **Надежность**: Каждая команда изолирована  
 ✅ **Отладка**: Легко воспроизвести любую команду вручную  
 ✅ **Производительность**: Нет постоянных процессов в фоне  
-✅ **Стабильность**: Нет проблем с зависшими потоками 
+✅ **Стабильность**: Нет проблем с зависшими потоками
+
+---
+
+## Telecodex (Telegram → Codex bridge)
+
+A pinned submodule at `vendor/telecodex` provides a Telegram bot that forwards
+messages to the OpenAI Codex CLI SDK with a workspace-write sandbox.
+
+### Recommended runtime
+
+| Component | Requirement |
+|-----------|-------------|
+| Node.js   | **22 LTS** (minimum) |
+| codex CLI | `npm install -g @openai/codex` |
+| TELEGRAM_BOT_TOKEN | From @BotFather |
+| OPENAI_API_KEY | For Whisper voice transcription on Windows |
+
+### Quick start
+
+```powershell
+# 1. Build submodule (first time only)
+.\scripts\setup-telecodex.ps1
+
+# 2. Fill in secrets
+notepad .env
+
+# 3. Launch
+.\scripts\start-telecodex.ps1
+```
+
+See [docs/telecodex-integration.md](docs/telecodex-integration.md) for full
+setup, BotFather configuration, Codex login, Windows voice setup, security
+defaults, and upgrade instructions.
