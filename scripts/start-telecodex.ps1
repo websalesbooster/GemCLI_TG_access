@@ -88,14 +88,20 @@ if (-not (Get-Command 'codex' -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-codex --version 2>&1 | Write-Host
+$oldErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    codex --version
 
-# Check login / auth status (read-only check, no inference request)
-Write-Host "Checking codex login status..." -ForegroundColor Cyan
-codex login status 2>&1 | Write-Host
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Codex is not authenticated. Run codex login and try again."
-    exit 1
+    # Check login / auth status (read-only check, no inference request)
+    Write-Host "Checking codex login status..." -ForegroundColor Cyan
+    codex login status
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Codex is not authenticated. Run codex login and try again."
+        exit 1
+    }
+} finally {
+    $ErrorActionPreference = $oldErrorActionPreference
 }
 
 # ── 4. Confirm entrypoint exists ─────────────────────────────────────────────
