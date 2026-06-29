@@ -21,7 +21,6 @@ __pycache__/
 Thumbs.db
 
 # Telecodex runtime artefacts (do NOT ignore vendor/telecodex itself)
-.telecodex/
 vendor/telecodex/dist/
 vendor/telecodex/node_modules/
 vendor/telecodex/.npm/
